@@ -1,0 +1,34 @@
+pipeline {
+    agent any
+    parameters { booleanParam(name: 'SCAN', defaultValue: true, description: 'Scan requis pour valider le TP complet') }
+    options { timestamps(); disableConcurrentBuilds(); timeout(time: 90, unit: 'MINUTES') }
+    stages {
+        stage('Preparer agent') { steps { sh 'docker build --target test-deps -t tp37-python:tests .' } }
+        stage('Qualite') {
+            parallel {
+                stage('Tests et couverture') {
+                    agent { docker { image 'tp37-python:tests'; args '-e HOME=/tmp'; reuseNode true } }
+                    steps { sh 'mkdir -p reports; pytest --junitxml=reports/junit.xml --cov=app --cov-branch --cov-report=xml:reports/coverage.xml --cov-fail-under=80' }
+                    post {
+                        always {
+                            junit allowEmptyResults: true, testResults: 'reports/junit.xml'
+                            recordCoverage tools: [[parser: 'COBERTURA', pattern: 'reports/coverage.xml']]
+                        }
+                    }
+                }
+                stage('Flake8') {
+                    agent { docker { image 'tp37-python:tests'; args '-e HOME=/tmp'; reuseNode true } }
+                    steps { sh 'mkdir -p reports; flake8 app.py tests --output-file=reports/flake8.txt --tee' }
+                    post { always { recordIssues tools: [flake8(pattern: 'reports/flake8.txt')] } }
+                }
+                stage('Hadolint') { steps { sh 'docker run --rm -i hadolint/hadolint:v2.12.0 < Dockerfile' } }
+            }
+        }
+        stage('Build') { steps { sh 'docker build --build-arg APP_VERSION="1.0.$BUILD_NUMBER" -t "tp37-webapp:1.0.$BUILD_NUMBER" .' } }
+        stage('Trivy') {
+            when { expression { params.SCAN } }
+            steps { sh 'docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v legeni-trivy-cache:/root/.cache/trivy aquasec/trivy:0.58.2 image --timeout 60m --scanners vuln --severity CRITICAL --ignore-unfixed --exit-code 1 "tp37-webapp:1.0.$BUILD_NUMBER"' }
+        }
+    }
+    post { always { archiveArtifacts artifacts: 'reports/*', allowEmptyArchive: true } }
+}

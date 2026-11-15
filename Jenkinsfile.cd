@@ -1,0 +1,49 @@
+pipeline {
+    agent any
+    parameters { booleanParam(name: 'SIMULER_PANNE_PROD', defaultValue: false, description: 'Tester le rollback') }
+    environment {
+        IMAGE = 'tp38-webapp'
+        VERSION = "1.0.$BUILD_NUMBER"
+        COMPOSE = 'docker compose -f deploy/docker-compose.deploy.yml'
+    }
+    options { timestamps(); disableConcurrentBuilds(); timeout(time: 45, unit: 'MINUTES') }
+    stages {
+        stage('Tests') { steps { sh 'docker build --target test -t "$IMAGE:test" .' } }
+        stage('Build') { steps { sh 'docker build --build-arg APP_VERSION="$VERSION" -t "$IMAGE:$VERSION" .' } }
+        stage('Staging') {
+            environment { REDIS_PASSWORD = credentials('redis-password-staging') }
+            steps {
+                sh '''
+                    IMAGE_REF="$IMAGE:$VERSION" APP_ENV=staging APP_COLOR='#bf8700' PORT=8186 $COMPOSE -p tp38-staging up -d --wait --wait-timeout 120
+                    bash deploy/smoke-test.sh tp38-staging "$VERSION"
+                '''
+            }
+        }
+        stage('Validation production') {
+            when { branch 'main' }
+            steps { timeout(time: 15, unit: 'MINUTES') { input message: "Valider la production locale TP 3.8 version $VERSION ?", ok: 'Deployer' } }
+        }
+        stage('Production') {
+            when { branch 'main' }
+            environment { REDIS_PASSWORD = credentials('redis-password-prod') }
+            steps {
+                script {
+                    env.PREVIOUS_IMAGE = sh(script: "docker inspect -f '{{.Config.Image}}' tp38-prod-web-1 2>/dev/null || echo none", returnStdout: true).trim()
+                    try {
+                        sh '''
+                            IMAGE_REF="$IMAGE:$VERSION" APP_ENV=prod APP_COLOR='#2da44e' PORT=8187 $COMPOSE -p tp38-prod up -d --wait --wait-timeout 120
+                            if [ "$SIMULER_PANNE_PROD" = true ]; then echo "Panne volontaire du smoke test"; exit 1; fi
+                            bash deploy/smoke-test.sh tp38-prod "$VERSION"
+                        '''
+                    } catch (err) {
+                        if (env.PREVIOUS_IMAGE != 'none') {
+                            sh 'IMAGE_REF="$PREVIOUS_IMAGE" APP_ENV=prod APP_COLOR="#2da44e" PORT=8187 $COMPOSE -p tp38-prod up -d --wait --wait-timeout 120'
+                        }
+                        error('Production en echec, ancienne image restauree si disponible')
+                    }
+                }
+            }
+        }
+    }
+    post { failure { echo "ECHEC $JOB_NAME #$BUILD_NUMBER. Configurer SMTP pour les notifications." } }
+}
