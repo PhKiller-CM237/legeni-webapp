@@ -5,9 +5,9 @@ pipeline {
         string(name: 'DOCKERHUB_ID', defaultValue: '', description: 'Identifiant Docker Hub')
     }
     environment {
-        VERSION = "1.0.$BUILD_NUMBER"
+        VERSION = "${env.BRANCH_NAME && env.BRANCH_NAME != 'main' ? env.BRANCH_NAME.replaceAll('[^a-zA-Z0-9.-]', '-') + '-' + env.BUILD_NUMBER : '1.0.' + env.BUILD_NUMBER}"
         IMAGE = 'legeni-webapp'
-        TEST_CONTAINER = "tp35-test-$BUILD_NUMBER"
+        TEST_CONTAINER = "tp35-${env.BUILD_TAG.toLowerCase().replaceAll('[^a-z0-9_.-]', '-')}"
     }
     options { timestamps(); disableConcurrentBuilds(); timeout(time: 30, unit: 'MINUTES') }
     stages {
