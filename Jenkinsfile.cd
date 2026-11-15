@@ -45,5 +45,21 @@ pipeline {
             }
         }
     }
-    post { failure { echo "ECHEC $JOB_NAME #$BUILD_NUMBER. Configurer SMTP pour les notifications." } }
+    post {
+        failure {
+            sh '''python3 - <<'PY'
+import os
+import smtplib
+from email.message import EmailMessage
+message = EmailMessage()
+message["From"] = "jenkins@legeni.test"
+message["To"] = "etudiant@legeni.test"
+message["Subject"] = "ECHEC TP Jenkins : " + os.environ["JOB_NAME"]
+message.set_content("Le pipeline a echoue. Consulter " + os.environ.get("BUILD_URL", "Jenkins"))
+with smtplib.SMTP("tp-mailpit", 1025, timeout=10) as client:
+    client.send_message(message)
+print("Notification d'echec recue dans la boite locale Mailpit.")
+PY'''
+        }
+    }
 }
